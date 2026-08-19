@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>目录 · DeepSeek Harness 架构设计</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #161b22; --border: #2a313c;
+  --text: #e6edf3; --muted: #8b949e; --accent: #4d7cfe; --accent-2: #37b6ff;
+  --code-bg: #0b0f14; --table-head: #1c2430; --row-alt: #12171f;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.75 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.wrap { max-width: 960px; margin: 0 auto; padding: 40px 28px 80px; }
+a { color: var(--accent-2); text-decoration: none; border-bottom: 1px solid transparent; }
+a:hover { border-bottom-color: var(--accent-2); }
+h1, h2, h3, h4 { line-height: 1.3; }
+h1 { font-size: 2em; margin: 0 0 8px; }
+h2 { font-size: 1.5em; margin: 2.2em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1.2em; margin: 1.8em 0 .5em; color: var(--accent-2); }
+h4 { font-size: 1.05em; margin: 1.4em 0 .4em; }
+p { margin: .8em 0; }
+code {
+  font-family: var(--mono); font-size: .9em;
+  background: var(--code-bg); padding: .12em .4em; border-radius: 4px;
+}
+pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; line-height: 1.5;
+}
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: .95em; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+th { background: var(--table-head); }
+tbody tr:nth-child(even) { background: var(--row-alt); }
+blockquote {
+  margin: 1em 0; padding: .4em 1em; border-left: 4px solid var(--accent);
+  background: var(--panel); color: var(--muted); border-radius: 0 6px 6px 0;
+}
+hr { border: none; border-top: 1px solid var(--border); margin: 2.4em 0; }
+.langbar { font-size: .85em; color: var(--muted); margin-bottom: 1.6em; }
+.mermaid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 1.4em 0; text-align: center; overflow-x: auto; }
+footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid var(--border); font-size: .85em; color: var(--muted); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+<nav style="font-size:.88em;color:var(--muted);margin-bottom:2em;">
+  <a href="index.html">目录</a> ·
+  <a href="overview.html">概要设计</a> ·
+  <a href="detailed.html">详细设计</a>
+</nav>
+
+<div class="langbar"><a href="index.html">中文</a> · English sources linked per page</div>
+
+<h1>DeepSeek Harness 架构分析</h1>
+<p>本目录是基于当前源码的架构设计综述：一份概要设计与一份详细设计（含外围能力子系统），每份都有双语 Markdown（同等权威）与一份中文 HTML 渲染页。</p>
+<h2>文档</h2>
+<table>
+<thead><tr><th>文档</th><th>HTML</th><th>Markdown（中文）</th><th>Markdown（English）</th></tr></thead>
+<tbody>
+<tr><td>概要设计</td><td><a href="overview.html">overview.html</a></td><td><a href="overview.zh.md">overview.zh.md</a></td><td><a href="overview.md">overview.md</a></td></tr>
+<tr><td>详细设计</td><td><a href="detailed.html">detailed.html</a></td><td><a href="detailed.zh.md">detailed.zh.md</a></td><td><a href="detailed.md">detailed.md</a></td></tr>
+</tbody>
+</table>
+<h2>与既有文档的关系</h2>
+<p>本目录是 <code>docs/architecture.md</code>（行为地图）与 <code>docs/subsystems/</code>（类型字典）之上的设计综述，不替代它们。</p>
+
+<footer>由 <code>docs/design/index.html</code> 生成 · DeepSeek Harness 架构分析</footer>
+</div>
+<script>
+mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+</script>
+</body>
+</html>

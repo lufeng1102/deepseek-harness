@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>概要设计 · DeepSeek Harness 架构设计</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #161b22; --border: #2a313c;
+  --text: #e6edf3; --muted: #8b949e; --accent: #4d7cfe; --accent-2: #37b6ff;
+  --code-bg: #0b0f14; --table-head: #1c2430; --row-alt: #12171f;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.75 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.wrap { max-width: 960px; margin: 0 auto; padding: 40px 28px 80px; }
+a { color: var(--accent-2); text-decoration: none; border-bottom: 1px solid transparent; }
+a:hover { border-bottom-color: var(--accent-2); }
+h1, h2, h3, h4 { line-height: 1.3; }
+h1 { font-size: 2em; margin: 0 0 8px; }
+h2 { font-size: 1.5em; margin: 2.2em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1.2em; margin: 1.8em 0 .5em; color: var(--accent-2); }
+h4 { font-size: 1.05em; margin: 1.4em 0 .4em; }
+p { margin: .8em 0; }
+code {
+  font-family: var(--mono); font-size: .9em;
+  background: var(--code-bg); padding: .12em .4em; border-radius: 4px;
+}
+pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; line-height: 1.5;
+}
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: .95em; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+th { background: var(--table-head); }
+tbody tr:nth-child(even) { background: var(--row-alt); }
+blockquote {
+  margin: 1em 0; padding: .4em 1em; border-left: 4px solid var(--accent);
+  background: var(--panel); color: var(--muted); border-radius: 0 6px 6px 0;
+}
+hr { border: none; border-top: 1px solid var(--border); margin: 2.4em 0; }
+.langbar { font-size: .85em; color: var(--muted); margin-bottom: 1.6em; }
+.mermaid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 1.4em 0; text-align: center; overflow-x: auto; }
+footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid var(--border); font-size: .85em; color: var(--muted); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+<nav style="font-size:.88em;color:var(--muted);margin-bottom:2em;">
+  <a href="index.html">目录</a> ·
+  <a href="overview.html">概要设计</a> ·
+  <a href="detailed.html">详细设计</a>
+</nav>
+
+<div class="langbar"><a href="overview.html">中文</a> · <a href="overview.md">English</a></div>
+<h1>DeepSeek Harness 架构 —— 概要设计</h1>
+<p><a href="overview.md">English</a> | 中文</p>
+<p>本文是 DeepSeek Harness 的<strong>概要设计</strong>，回答「这个系统由哪些部分构成、各部分的职责边界、数据如何流过」三个问题。它面向想在一页内建立整体心智模型的读者；类型级契约、接口签名和各子系统的逐字段语义见同目录的<a href="detailed.md">详细设计</a>。它不替代仓库既有的<a href="../architecture.md">架构图</a>（行为地图）与<a href="../subsystems/README.md">子系统参考</a>（类型字典）——本目录是那份地图之上的设计综述，三者各司其职。</p>
+<h2>1. 定位与总体形态</h2>
+<p>DeepSeek Harness 是一个<strong>插件化的 Agent 运行框架</strong>，建立在 vendored 版本的 Cordis 之上。它的核心主张一句话：<strong>一切都是插件</strong>——模型适配器、工具注册表、会话日志、审批策略乃至 Agent 主循环本身，都是从配置可替换的插件，不存在需要打补丁的特权核心。</p>
+<p>一个运行中的 <code>dsh</code> 进程是一棵在<strong>启动时</strong>从若干有序层拼装出来的插件树。扩展的途径不是改代码，而是把新插件挂在别的插件旁边：注册是副作用（<code>ctx.effect()</code> / <code>ctx.on()</code> / <code>ctx.waterfall()</code>），插件卸载时自动回滚。这条原则贯穿全文——它决定了下面的组合机制、能力 seam 与事件体系。</p>
+<h3>1.1 三层形态</h3>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>职责</th>
+<th>关键术语</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>组合层</td>
+<td>把插件树从声明式层拼出来</td>
+<td>profile、bundle、patch、<code>cordis.yml</code></td>
+</tr>
+<tr>
+<td>产品 spine</td>
+<td>会话、提示词、工具、Agent、主循环</td>
+<td><code>ctx.sessions</code>、<code>ctx.systemPrompt</code>、<code>ctx.tools</code>、<code>ctx.agents</code>、<code>ctx.agentLoop</code></td>
+</tr>
+<tr>
+<td>能力 seam</td>
+<td>可替换能力及其模型可见工具</td>
+<td>Service Definition / Provider / Consumer</td>
+</tr>
+</tbody></table>
+<p>spine 是产品 API 的脊梁：它定义了「什么是会话、什么是工具、Agent 如何被驱动」，并给出默认主循环的具体实现。能力 seam 挂在 spine 之上，用「换一个 Provider 就换掉整个产品」的方式提供文件系统、Shell、子 Agent、Web 等能力。</p>
+<h2>2. 组合机制：profile 与 bundle</h2>
+<p>运行的 <code>dsh</code> 是启动时从有序层拼出的插件树，拼装单位是 <strong>profile</strong> 与 <strong>bundle</strong>。</p>
+<p><strong>profile</strong> 是存于 Harness home 的命名组合：它列出自己堆叠的 bundle、记录装过哪些树外插件、并保留用户自己的 <code>cordis.patch.yml</code>。<code>web</code> 与 <code>headless</code> 作为模板随包发布；<code>tui</code>、<code>cc-tui</code> 等是用户通过 <code>dsh plugin</code> 创建的树外 profile。</p>
+<p><strong>bundle</strong> 是 Cordis 配置行与其挂载代码的<strong>分发格式</strong>，使其插入的内容仍能被上层 patch。每个 package 在自己的 <code>package.json</code> 里用 <code>dsh</code> 字段声明身份：<code>dsh.profile</code> 列出一个 profile 的 bundles，<code>dsh.bundle</code> 指向 bundle 的 patch 文件。</p>
+<p>各层按此顺序作用于一个空的入口列表：profile 按声明顺序逐 bundle 应用 → profile 自身的 <code>cordis.patch.yml</code> → home 级 <code>$DSH_HOME/cordis.patch.yml</code> → 命令行 <code>--patch</code> 覆盖。patch 按 <code>id</code> 定位一行并<strong>整体替换</strong>其 config，或插入新行。<code>dsh-base</code> 是每个 profile 的第一层（模型适配器、工具、持久化、沙箱与审批策略、设置、凭据、遥测）；<code>dsh-web-app</code> 加浏览器应用，<code>dsh-headless</code> 加一次性 runner。</p>
+<div class="mermaid-wrap"><pre class="mermaid">flowchart TD
+    subgraph Layers[ordered layers of one profile]
+        direction TB
+        B1["bundle: dsh-base"] --> B2["bundle: dsh-web-app"]
+        B2 --> P["profile cordis.patch.yml"]
+        P --> H["home cordis.patch.yml"]
+        H --> O["--patch overlays"]
+    end
+    Layers --> Tree[assembled Cordis plugin tree]</pre></div><p>任何 <code>dsh --profile &lt;name&gt; --dump-config</code> 打印出来的行都可以被用户自己的 patch 替换——这是「无特权核心」在用户侧的可操作表达。</p>
+<h2>3. 产品 spine：核心包与 LLM 词汇</h2>
+<p>spine 由 <code>packages/core</code> 的六个包 + <code>packages/llm</code> 的对话词汇构成。一次模型回合依序流经它们：<code>agent-loop</code> 认领排队输入 → 在会话日志上打开一个 turn → <code>system-prompt</code> 组装请求前缀、从日志派生历史 → 经 LLM seam 流式取模型响应 → 经工具注册表派发工具调用 → 把每一条模型可见事实追加回日志，供下一步派生。</p>
+<table>
+<thead>
+<tr>
+<th>包</th>
+<th>职责</th>
+<th><code>ctx</code> key</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>core/session</code></td>
+<td>只追加的 <code>SessionEvent</code> 日志 + 内存 store（唯一真相源）</td>
+<td><code>ctx.sessions</code></td>
+</tr>
+<tr>
+<td><code>core/system-prompt</code></td>
+<td>提示词分节与工具 schema 组装</td>
+<td><code>ctx.systemPrompt</code></td>
+</tr>
+<tr>
+<td><code>core/tools</code></td>
+<td>作用域工具注册表与受保护的执行管道</td>
+<td><code>ctx.tools</code></td>
+</tr>
+<tr>
+<td><code>core/agent</code></td>
+<td><code>Agent</code> 接口、live 注册表、<code>agent/*</code> 事件</td>
+<td><code>ctx.agents</code></td>
+</tr>
+<tr>
+<td><code>core/agent-loop</code></td>
+<td>实现该接口的默认驱动</td>
+<td><code>ctx.agentLoop</code></td>
+</tr>
+<tr>
+<td><code>core/scope</code></td>
+<td>每-Agent 作用域注册原语</td>
+<td>库，无 key</td>
+</tr>
+<tr>
+<td><code>llm/llm</code></td>
+<td>消息与流词汇，以及适配器 seam</td>
+<td><code>ctx.llm</code></td>
+</tr>
+</tbody></table>
+<p>其中 <code>core/scope</code> 是唯一的非服务包：一个无依赖的库（<code>createScope</code>/<code>scopeOf</code>/<code>scopeTarget</code>），恰好位于 <code>session</code> 与 <code>system-prompt</code> 的图下方，让它们消费它而不成环。<code>agent-loop</code> 是 <code>Agent</code> 契约的唯一具体实现，扩展插件依赖 <code>agent</code> 而非 <code>agent-loop</code>，从而主循环保持可替换。</p>
+<h3>3.1 会话日志是唯一真相源</h3>
+<p><code>Session</code> 是一个<strong>只追加</strong>的类型化 <code>SessionEvent</code> 日志。模型看到的上下文全部由它派生——不存在另外存储的消息历史：<code>deriveMessages()</code> 从日志投射消息历史，原始 <code>assistant/chunk</code> 事件保留 token 级回放保真度，fork/resume/转写/遥测/持久化也都由这条流派生。</p>
+<p><strong>模型可见 ⟺ 已记录</strong>是一条运行时断言的不变量：任何到达模型请求的内容都必须能从日志重建。这就是为什么新增一个模型可见输入必须先扩展 <code>SessionEventMap</code> 并新增一个 session 事件，而不是直接拼进请求。</p>
+<h3>3.2 类型系统的两条贯穿模式</h3>
+<p>几乎每个可扩展联合类型都遵循 <strong><code>…Map → derived-union</code></strong> 模式：一个以判别标签为 key 的接口（<code>…Map</code>），联合类型由它用 <code>keyof</code> 派生；插件通过<strong>声明合并</strong>加新变体而无需改 owner 包。五个典型 map 见<a href="detailed.md#23-the-map--derived-union-pattern">详细设计 §2.3</a>。</p>
+<p>跨包传递的 ID 都是<strong>品牌化</strong>的（<code>Branded&lt;B&gt;</code>）：结构上是字符串，类型层面不可互换——<code>SessionId</code> 不能被当作 <code>CallId</code> 传。<code>Branded&lt;B&gt;</code> 原语住在类型专用的 <code>dsh-brand</code> 包，无任何运行时代码，任何包都能品牌自己的 ID 而不依赖无关能力包。</p>
+<h2>4. 事件体系：三类事件</h2>
+<p>选对事件域是大多数改动的第一决策。</p>
+<ul>
+<li><strong>Session 事件</strong>：追加到日志、经 <code>session/event</code> 广播的持久事实。需要跨 reload 存活的用它。</li>
+<li><strong>Agent 事件</strong>（<code>agent/*</code>）：携带 live <code>Agent</code>——inbox、step、status、request、validation、continuation。用在途观察与拦截。</li>
+<li><strong>Capability 事件</strong>：把策略与适配器挂到 seam（<code>fs/*</code>、<code>tools/*</code>、<code>telemetry/*</code>），无需 import 主循环。</li>
+</ul>
+<p><code>turn/*</code>、<code>step/*</code>、<code>user/message</code>、<code>assistant/*</code>、<code>tool/*</code> 是持久会话事件；其余是跨三个域的 live 扩展点。<code>agent/pre-step</code>、<code>agent/request</code>、<code>llm/stream</code> 与三个 <code>tools/*</code> 是瀑布，监听器<strong>必须调用 <code>next()</code></strong> 才能委托；<code>agent/turn-stopping</code> 是串行的、无 <code>next()</code>。</p>
+<h2>5. 能力 seam：可替换能力</h2>
+<p><strong>seam</strong> 是一个可交换能力，含三个角色：<strong>Service Definition</strong>（声明 <code>ctx</code> 服务与词汇类型的抽象服务）；一个或多个 <strong>Service Provider</strong>（实现它）；一个或多个 <strong>Consumer</strong>（消费它，通常是模型可见工具）。一个包可以兼任多角色，但单一角色不构成 seam；新增能力意味着三件套一起设计。</p>
+<p>seam 是「换一个 Provider 就换掉整个产品」的原因：文件系统与 subprocess Provider 共享同一套执行世界，把它们指向远程沙箱，Bash、PTY、LSP 就一起移动，无需 Provider 分叉。subagent Provider 同样在单一接口背后变化极大——从新子 Agent 到另一产品里的委托回合。</p>
+<h2>6. 会话生命周期：turn 与 step</h2>
+<p><strong>step</strong> 是一次模型请求加上它请求的工具调用；<strong>turn</strong> 是零或多个 step——在首个输入被认领前打开，无事可欠时关闭。</p>
+<div class="mermaid-wrap"><pre class="mermaid">sequenceDiagram
+    participant L as agent-loop
+    participant S as session log
+    participant M as model (LLM seam)
+    participant T as tool registry
+    L->>S: turn/start
+    L->>L: agent/pre-step (reject | enter)
+    L->>S: step/start + user/message
+    L-->>S: deriveMessages (from log)
+    L->>M: agent/request → llm/stream → assistant/chunk*
+    M-->>S: assistant/message
+    L->>T: tool/call* → pre-execute → execute → post-execute
+    T-->>S: tool/result*
+    L->>S: step/end (tools still owed, or new input → next step)
+    L->>S: turn/end</pre></div><p>输入经统一的 inbox 到达驱动：一些消息立刻唤醒它，注入的上下文在 inbox 里等到别的消息唤醒它。<code>agent/pre-step</code> 决定模型看到什么，监听器可改写认领的消息或直接拒绝；被拒绝或为空的首次认领仍会关闭一个未消耗任何 step 的持久 turn，让日志记录下这次尝试。</p>
+<h2>7. 交付与构建</h2>
+<p>仓库是 pnpm workspace（ESM everywhere），npm scope 统一为 <code>@deepseek-ai/dsh-*</code>。<code>apps/cli</code> 导出 <code>dsh</code> 命令（<code>dsh --profile &lt;name&gt;</code>、<code>dsh plugin</code>、<code>dsh web</code> 别名）；构建走 <code>tsc</code> 产类型 + <code>tsdown</code> 打包运行时代码，host 与 client 两个平面分开构建。源码启动经 <code>node --import tsx/esm</code>，类型在 <code>strict: true</code> 下编译。Python SDK 与 vendored Cordis 源码构成仓库的其余两翼，但不在本设计综述范围内。</p>
+<h2>8. 下一步</h2>
+<p>类型级契约、接口签名与外围能力子系统的逐字段语义见<a href="detailed.md">详细设计</a>。任一步的改动都应在 <code>packages/</code> 前先读<a href="../architecture.md">架构图</a>与本文件。</p>
+
+<footer>由 <code>docs/design/overview.zh.md</code> 生成 · DeepSeek Harness 架构分析</footer>
+</div>
+<script>
+mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+</script>
+</body>
+</html>

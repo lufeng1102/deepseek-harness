@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>详细设计 · DeepSeek Harness 架构设计</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #161b22; --border: #2a313c;
+  --text: #e6edf3; --muted: #8b949e; --accent: #4d7cfe; --accent-2: #37b6ff;
+  --code-bg: #0b0f14; --table-head: #1c2430; --row-alt: #12171f;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.75 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.wrap { max-width: 960px; margin: 0 auto; padding: 40px 28px 80px; }
+a { color: var(--accent-2); text-decoration: none; border-bottom: 1px solid transparent; }
+a:hover { border-bottom-color: var(--accent-2); }
+h1, h2, h3, h4 { line-height: 1.3; }
+h1 { font-size: 2em; margin: 0 0 8px; }
+h2 { font-size: 1.5em; margin: 2.2em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1.2em; margin: 1.8em 0 .5em; color: var(--accent-2); }
+h4 { font-size: 1.05em; margin: 1.4em 0 .4em; }
+p { margin: .8em 0; }
+code {
+  font-family: var(--mono); font-size: .9em;
+  background: var(--code-bg); padding: .12em .4em; border-radius: 4px;
+}
+pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; line-height: 1.5;
+}
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: .95em; }
+th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+th { background: var(--table-head); }
+tbody tr:nth-child(even) { background: var(--row-alt); }
+blockquote {
+  margin: 1em 0; padding: .4em 1em; border-left: 4px solid var(--accent);
+  background: var(--panel); color: var(--muted); border-radius: 0 6px 6px 0;
+}
+hr { border: none; border-top: 1px solid var(--border); margin: 2.4em 0; }
+.langbar { font-size: .85em; color: var(--muted); margin-bottom: 1.6em; }
+.mermaid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 1.4em 0; text-align: center; overflow-x: auto; }
+footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid var(--border); font-size: .85em; color: var(--muted); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+<nav style="font-size:.88em;color:var(--muted);margin-bottom:2em;">
+  <a href="index.html">目录</a> ·
+  <a href="overview.html">概要设计</a> ·
+  <a href="detailed.html">详细设计</a>
+</nav>
+
+<div class="langbar"><a href="detailed.html">中文</a> · <a href="detailed.md">English</a></div>
+<h1>DeepSeek Harness 架构 —— 详细设计</h1>
+<p><a href="detailed.md">English</a> | 中文</p>
+<p>本文是 DeepSeek Harness 的<strong>详细设计</strong>，逐子系统记录类型契约、接口签名、数据流与扩展点。它承接<a href="overview.md">概要设计</a>的整体心智模型，落到「每个 seam 声明什么、谁实现、谁消费」的层面；字段级完整清单见仓库既有的<a href="../subsystems/README.md">子系统参考</a>与<a href="../event-producer-consumer.md">生成的事件目录</a>，本文只保留设计决策所需的要点并链接到 owner。</p>
+<h2>1. 核心 spine 逐包设计</h2>
+<h3>1.1 <code>core/session</code> —— 事件溯源日志</h3>
+<p><code>Session</code> 是唯一真相源：一个<strong>只追加</strong>的 <code>SessionEvent</code> 日志，消息历史由 <code>deriveMessages()</code> 派生，不另存。每个事件携带单调 <code>seq</code>、<code>time</code> 与按 <code>type</code> 判别的 <code>data</code> 载荷；13 个核心变体（<code>turn/*</code>、<code>step/*</code>、<code>user/message</code>、<code>assistant/*</code>、<code>tool/*</code>、<code>todo/write</code>、<code>request/*</code>、<code>session/end-seed</code>）的字段级完整声明与 JSDoc 见 <a href="../subsystems/session.md">session.md</a>。</p>
+<p><code>SessionEventMap</code> 是 merge-extensible 的：插件用 <code>declare module &#39;@deepseek-ai/dsh-session/types&#39;</code> 合并新事件类型，不改 owner 包。事件是判别联合（<code>switch (event.type)</code> 窄化 <code>event.data</code>），<code>sourceEventSeqs</code> 与 <code>surfaceOp</code> 是<strong>条件字段</strong>，只存在于三个 surface 变体（<code>user/message</code>、<code>assistant/message</code>、<code>tool/result</code>）上，由编译器在 <code>Session.append()</code> 处强制。</p>
+<p><strong>surface</strong> 是有序投影：只有三个 <code>SurfaceEventType</code> 能上 surface，<code>append</code> 加到末尾，<code>{ op: &#39;replace&#39;, start, end }</code> 表示压缩用替换节点遮蔽旧节点。<strong>ignorable</strong> 标记让不认识该类型的 reader 可以安全跳过纯信息记录；缺省 required，宁可过度拒绝也不静默恢复一个被掏空的会话。<code>SESSION_FORMAT_VERSION</code> 钉在 <code>0</code>，只有结构性变化才加一。<code>SessionHeader</code> 把版本、<code>cwd</code>、fork 血缘（<code>parentSession</code>/<code>seedLength</code>）、<code>delegationDepth</code> 等存储元数据放在事件日志<strong>之外</strong>，不进 <code>deriveMessages()</code>。</p>
+<h3>1.2 <code>core/agent</code> —— live Agent 与注册表</h3>
+<p><code>Agent</code> 是插件（UI、hook、编排）编程的公共句柄；<code>ctx.agents.get(id)</code> 返回它。具体实现是 <code>dsh-agent-loop</code> 的内部类，loop 之外无依赖。完整声明与各方法的 JSDoc 契约见 <a href="../subsystems/core.md">core.md</a>。</p>
+<p>投递经两个有序 pending 列表（<strong>inbox</strong>）：<code>InboxTarget = &#39;next-turn&#39; | &#39;next-step&#39;</code>。<code>followup</code> 是下个 turn 的普通消息，<code>steer</code> 是最邻近 step 的 steering，<code>inject</code> 注入不唤醒的模型上下文。<code>cancel</code> 清队列并中止活动 turn，<code>cause</code> 是 TypeScript 强制的同进程输入（<code>user</code>/<code>parent</code>/<code>hook</code>/<code>disposed</code>）。</p>
+<p><code>AgentRegistry</code>（<code>ctx.agents</code>）提供创建与所有权：<code>create()</code>/<code>resume()</code> 经注册的 <code>AgentFactory</code> 构造并发布，返回只被 owner 持有的 <code>AgentHandle</code>（含 <code>dispose()</code> 能力）；<code>register()</code> 记录已构造的 agent。<strong>initiator scope</strong> 是进程内的因果归因：<code>withInitiator(agent, op)</code> 让一段异步链继承发起 Agent，<code>withoutInitiator</code> 屏蔽它。环境存在既不证明存活也不是授权。</p>
+<p>生命周期状态 <code>AgentStatus = &#39;idle&#39; | &#39;running&#39;</code> 在每次迁移发 <code>agent/status</code>；<code>running</code> 描述驱动排空区间、可能跨多个排队 turn、不证明某 turn 仍开。<code>whenIdle()</code> 观察整个 agent 的静默，追踪任务与后继工作。</p>
+<h3>1.3 <code>core/agent-loop</code> —— 默认驱动</h3>
+<p>step 流程的瀑布契约：<code>agent/pre-step</code>（唯一串行监听链）返回 <code>PreStepDecision = { kind: &#39;reject&#39; } | { kind: &#39;enter&#39;; messages }</code>；<code>agent/request</code> 改写冻结的调用配置（只能改 config，不能改 messages）；<code>agent/request-error</code> 在失败 step 关闭后、turn 关闭前运行，监听器返回 <code>{ kind: &#39;retry&#39; }</code> 且不调 <code>next()</code> 时接管恢复；<code>agent/turn-stopping</code> 串行、无 <code>next()</code>。<code>agent/session-start</code> 携带 <code>SessionStartSource = &#39;startup&#39; | &#39;resume&#39; | &#39;clear&#39; | &#39;compact&#39;</code>。</p>
+<h3>1.4 <code>core/tools</code> —— 工具注册表与执行管道</h3>
+<p><code>ToolDefinition</code> 是一个已注册工具：模型可见 <code>ToolSchema</code>（name/description/parameters）+ 强制 <code>output</code> 声明 + <code>execute</code> + 可选 <code>finalizeContent</code>/<code>timeoutMs</code>/<code>isConcurrencySafe</code>/<code>presentCall</code>/<code>presentResult</code>。<code>schemas()</code> 用白名单只投影 name/description/parameters 上 wire，保证回调永不泄漏给模型。完整字段与 JSDoc 见 <a href="../subsystems/tools.md">tools.md</a>。</p>
+<p><code>defineTool({ name, description, parameters, output, execute })</code> 用 <code>ValueSchemaSpec</code>（string/number/integer/boolean/null/array/object/json/oneOf）DSL 验证并窄化参数，从 <code>output.schema</code> 推出返回类型。执行管道：<code>tools/pre-execute</code>（allow/deny/ask 瀑布）→ 单调守卫 → <code>tools/execute</code>（around-dispatch 包装，含超时策略）→ <code>tools/post-execute</code> → <code>finalizeContent</code> → <code>tools/result</code>（不可变权威结果）。</p>
+<h3>1.5 <code>core/system-prompt</code> —— 分节组装</h3>
+<p>系统提示词由 <code>PromptSection</code>（静态或按 <code>AssembleContext</code> 求值，按 <code>order</code> 升序拼接；<code>-100</code> harness 身份、<code>0</code> persona、<code>100–199</code> 工具指引）与合作式瀑布组装。<code>PromptContext</code> 是缓存安全的动态上下文，作为持久 user-role 快照落日志。<code>ToolProviderResult</code> 暴露本次装配的模型可见 schema 集与已知名全集，用于区分「配置名写错」与「本 scope 刻意隐藏」。</p>
+<h3>1.6 <code>packages/llm</code> —— 对话词汇与适配器 seam</h3>
+<p>对话是 <code>Message</code>，消息是类型化 <code>ContentBlock</code> 数组（<code>text</code>/<code>reasoning</code>/<code>image</code>/<code>tool-call</code>/<code>tool-result</code>，由 merge-extensible <code>ContentBlockMap</code> 派生）。<code>Message</code> 是标识、不可变的 role/source/content 值；assistant 消息带 <code>AssistantProvenance</code>（provider/model/<code>replayState</code>）。<code>MessageSourceMap</code> 通过 <code>kind</code>（谁产出）与 <code>ContextForm</code>（<code>instructions</code>/<code>catalog</code>/<code>snapshot</code>/<code>notice</code>/<code>relay</code>/<code>recall</code>，是什么信息）两条独立轴刻画来源。<code>StreamChunk</code> 是流式 wire 协议；<code>BlockAssembler</code> 把 chunks 组装成消息；<code>LlmAdapter</code> 是每个 provider 必须实现的适配器契约。</p>
+<h2>2. 类型系统的贯穿模式</h2>
+<h3>2.1 品牌 ID</h3>
+<p><code>Branded&lt;B&gt;</code> 是只含类型信息的字符串品牌；<code>SessionId</code> 与 <code>CallId</code> 是两个核心 ID，能力包各自品牌自己的（如 <code>JobId</code>）。</p>
+<h3>2.2 判别标签 switch</h3>
+<p>封闭联合用 <code>assertNever</code> 收尾，merge-extensible 联合落到一个有文档的 default。</p>
+<h3>2.3 The <code>…Map → derived-union</code> pattern</h3>
+<p>五个典型 map：</p>
+<table>
+<thead>
+<tr>
+<th>Map</th>
+<th>包</th>
+<th>派生</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ContentBlockMap</code></td>
+<td><code>dsh-llm</code></td>
+<td><code>ContentBlock</code></td>
+</tr>
+<tr>
+<td><code>MessageSourceMap</code></td>
+<td><code>dsh-llm</code></td>
+<td><code>MessageSource</code></td>
+</tr>
+<tr>
+<td><code>FinishReasonMap</code></td>
+<td><code>dsh-llm</code></td>
+<td><code>FinishReason</code></td>
+</tr>
+<tr>
+<td><code>TurnEndReasonMap</code></td>
+<td><code>dsh-session</code></td>
+<td><code>TurnEndReason</code></td>
+</tr>
+<tr>
+<td><code>SessionEventMap</code></td>
+<td><code>dsh-session</code></td>
+<td><code>SessionEvent</code></td>
+</tr>
+</tbody></table>
+<h2>3. 能力 seam 的代表设计</h2>
+<p>每个 seam 都是三件套；此处以代表性 seam 记录契约，其余见 owner 页。</p>
+<h3>3.1 <code>fs</code> —— 文件系统</h3>
+<p>Service Definition（<code>ctx.fs</code>，<code>dsh-fs</code>）声明 <code>FsTarget</code> 与 read/write/edit 结果、observed-file 状态、<code>FsErrorCode</code>。Provider：<code>dsh-fs-local</code>。Consumer：<code>dsh-tool-fs</code>/<code>dsh-tool-fs-search</code> 模型工具 + <code>dsh-fs-observation-policy</code>（读/写/编辑需先观察文件）。它共享 subprocess 的执行世界——指向远程沙箱即整体搬走。</p>
+<h3>3.2 <code>shell</code> —— Bash 执行</h3>
+<p>Service Definition（<code>ctx.shell</code>，<code>dsh-shell</code>）声明 <code>ShellExecRequest</code>/<code>Spec</code> 分离：默认解析是 owner 实现里的显式 <code>resolve(request): Spec</code>，而非 <code>run()</code> 内隐式 <code>?? default</code>。Provider：<code>dsh-bash-local</code> 经 <code>ctx.subprocess</code> 派生。Consumer：<code>dsh-tool-bash</code>。</p>
+<h3>3.3 <code>subagent</code> —— 子 Agent</h3>
+<p>Service Definition（<code>ctx.subagent</code>）是命名 Provider 注册表；<code>SubagentStartRequest</code>/<code>Result</code>/<code>Run</code> 把启动时能力与运行时分离开。Provider：<code>dsh-subagent-spawn-in-process</code>（spawn，进程内子上下文）与 <code>dsh-subagent-fork-in-process</code>（fork，从父会话分叉）。Consumer：<code>dsh-tool-subagent</code>/<code>dsh-tool-subagent-fork</code> 委托工具。child 经 <code>composeFrom</code> 加入父的 standing composition，继承同一插件实例与工具注册。</p>
+<h3>3.4 <code>web</code> —— 网络访问</h3>
+<p>Service Definition（<code>ctx.web</code>，<code>dsh-web</code>）声明 <code>WebSearchRequest</code>/<code>Result</code>、<code>WebFetchRequest</code>/<code>Result</code>/<code>WebFetchBody</code> 与 <code>WebError</code>。Provider：<code>dsh-web-search-deepseek</code>。Consumer：<code>dsh-tool-web</code>。</p>
+<h3>3.5 <code>workflow</code> —— 批量子代理编排</h3>
+<p>Service Definition 声明 <code>WorkflowStartRequest</code>/<code>WorkflowMeta</code>/<code>WorkflowRun</code>/<code>Result</code> 与 <code>workflow/*</code> 事件载荷。Provider：<code>dsh-workflow-worker-thread</code>（worker 线程引擎）。Consumer：<code>dsh-tool-workflow</code>（<code>workflow</code> 工具）与 <code>dsh-tool-ralph</code>（<code>ralph</code> 工具）。</p>
+<h2>4. 持久化 seam</h2>
+<p><code>SessionPersistence</code>（<code>ctx.sessionPersistence</code>）是对既有 <code>SessionEvent</code> 的 locate/create/append 抽象——<strong>不引入并行持久化事件类型</strong>。<code>session/event</code> 是同步通知，持久化插件拷贝进 per-session 控制器而不阻塞生产者；固定批窗口到期或 <code>session/flush</code> 触发持久写。crash 恢复不截断：reload 遇到开着的 <code>turn/start</code> 时闭合合成 <code>turn/end { reason: { kind: &#39;interrupted&#39; } }</code>——<code>interrupted</code> 是唯一 loop 从不发出的 <code>TurnEndReason</code>。</p>
+<p>两个后端：JSONL（每会话独立 transcript 文件）与 SQLite（共享单库）。SQLite 用单调 <code>SCHEMA_VERSION</code>；<code>dsh-session</code> 把 <code>SESSION_FORMAT_VERSION</code> 钉在 <code>0</code>。<code>SessionHeader</code>（版本/cwd/血缘/种子边界）是存储关注点，与事件日志分离。</p>
+<h2>5. 外围能力子系统</h2>
+<table>
+<thead>
+<tr>
+<th>子系统</th>
+<th><code>ctx</code> / 包</th>
+<th>关键契约</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>session-query</code></td>
+<td><code>dsh-session-query</code></td>
+<td>逻辑语料、有界精确读取、血缘、事件关系、语义过滤、SQLite 全文搜索</td>
+</tr>
+<tr>
+<td><code>goal</code></td>
+<td>同会话目标（<code>ctx.goals</code>）</td>
+<td><code>active</code>/<code>paused</code>/<code>blocked</code>/<code>complete</code> 相位 + goal-round 上限；<code>blocked</code> 需策略码</td>
+</tr>
+<tr>
+<td><code>plan</code></td>
+<td><code>dsh-plan-mode</code></td>
+<td>log-only <code>plan/mode</code> 状态；<code>exit_plan_mode</code> 评审弧</td>
+</tr>
+<tr>
+<td><code>preset</code></td>
+<td><code>dsh-agent-presets</code></td>
+<td>per-session 组合：<code>list</code>/<code>resolve</code>/<code>mount</code>/<code>composeFrom</code>/<code>recompose</code></td>
+</tr>
+<tr>
+<td><code>jobs</code></td>
+<td><code>ctx.jobs</code></td>
+<td>品牌 <code>JobId</code>、生产者契约、消费者视图、<code>job_*</code> 控制工具</td>
+</tr>
+<tr>
+<td><code>interaction</code></td>
+<td>审批/交互</td>
+<td><code>ApprovalRequest</code>/<code>ApprovalOutcome</code>、<code>AskUserQuestionRequest</code>、命令、ask-user 工具</td>
+</tr>
+<tr>
+<td><code>sdk</code></td>
+<td>JSON-RPC</td>
+<td>进程外运行时 SDK：协议 + TS client + server 插件</td>
+</tr>
+<tr>
+<td><code>acp</code></td>
+<td>自动化 server</td>
+<td>只用于自动化的 Agent Client Protocol server</td>
+</tr>
+<tr>
+<td><code>web client/host</code></td>
+<td><code>dsh-client-modules</code> / <code>dsh-host-webserver</code></td>
+<td><code>dsh.client</code> 声明 → <code>window.__DSH_BOOT__</code> 图 → <code>/plugins/&lt;id&gt;/client.js</code></td>
+</tr>
+</tbody></table>
+<p>web GUI 拆分：Node 半（<code>ctx.clientModules</code>，<code>ClientModuleRegistry</code>）扫描声明 <code>dsh.client</code> 的包，组成 <code>WebBootEntry[]</code> 图注入 <code>window.__DSH_BOOT__</code>，为每个 bundle 提供 <code>/plugins/&lt;id&gt;/client.js</code> 路由，并 tap index 渲染注入 boot manifest；浏览器半（<code>ctx.modules</code>）惰性拉取并物化这些 bundle。缺有效 manifest 的页面不能 boot。</p>
+<h2>6. 数据流：turn/step 全时序</h2>
+<div class="mermaid-wrap"><pre class="mermaid">sequenceDiagram
+    participant L as agent-loop
+    participant A as agent/pre-step (waterfall)
+    participant S as session log
+    participant M as LLM seam
+    participant T as tools pipeline
+    L->>S: turn/start
+    L->>L: claim inbox (next-turn x1 + all next-step)
+    L->>A: agent/pre-step (reject | enter)
+    alt reject
+        L->>S: turn/end (no step)
+    else enter
+        L->>S: step/start + user/message
+        L->>S: request/header (latest snapshot)
+        L-->>S: deriveMessages (from log)
+        L->>M: agent/request → llm/stream → assistant/chunk*
+        M-->>S: assistant/message (+usage)
+        loop each tool call
+            L->>S: tool/call
+            L->>T: pre-execute → execute → post-execute
+            T-->>S: tool/result
+        end
+        L->>S: step/end
+    end
+    L->>A: agent/turn-stopping (serial)
+    L->>S: turn/end (completed | aborted | error | max-tokens | blocked)</pre></div><h2>7. 落地约束速查</h2>
+<p>扩展插件依赖 Service Definition，绝不依赖具体 Provider；<code>dsh-agent-loop</code> 可替换，UI/hook/tool 插件用 <code>dsh-agent</code>。注册是效果，注册表 <code>register()</code> 返回 disposer。可选服务用 <code>ctx.get(name)</code>，<code>ctx.&lt;name&gt;</code> 留给已声明的注入。新模型可见输入必须先扩 <code>SessionEventMap</code>。瀑布监听器必须调 <code>next()</code>。跨边界 opaque id 品牌化。同一异步操作用一个生命周期控制器或事务表达。</p>
+<p>本文的权威契约以源码为准；改 <code>packages/</code> 前先读<a href="../architecture.md">架构图</a>与<a href="overview.md">概要设计</a>。</p>
+
+<footer>由 <code>docs/design/detailed.zh.md</code> 生成 · DeepSeek Harness 架构分析</footer>
+</div>
+<script>
+mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+</script>
+</body>
+</html>
